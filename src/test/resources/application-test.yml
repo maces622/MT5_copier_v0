@@ -9,6 +9,11 @@ spring:
       ddl-auto: create-drop
 
 copier:
+  auth:
+    session:
+      cookie-name: TEST_SESSION
+      ttl: PT12H
+      secure: false
   account-config:
     route-cache:
       backend: log

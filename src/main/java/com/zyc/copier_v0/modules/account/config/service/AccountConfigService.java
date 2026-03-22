@@ -121,9 +121,19 @@ public class AccountConfigService {
 
     @Transactional
     public CopyRelationResponse createCopyRelation(CreateCopyRelationRequest request) {
+        return createCopyRelationInternal(request, false);
+    }
+
+    @Transactional
+    public CopyRelationResponse createSharedCopyRelation(CreateCopyRelationRequest request) {
+        return createCopyRelationInternal(request, true);
+    }
+
+    @Transactional
+    protected CopyRelationResponse createCopyRelationInternal(CreateCopyRelationRequest request, boolean allowCrossUser) {
         Mt5AccountEntity masterAccount = loadAccount(request.getMasterAccountId());
         Mt5AccountEntity followerAccount = loadAccount(request.getFollowerAccountId());
-        validateAccountsForRelation(masterAccount, followerAccount);
+        validateAccountsForRelation(masterAccount, followerAccount, allowCrossUser);
 
         copyRelationRepository.findByMasterAccount_IdAndFollowerAccount_Id(masterAccount.getId(), followerAccount.getId())
                 .ifPresent(existing -> {
@@ -170,6 +180,15 @@ public class AccountConfigService {
         CopyRelationEntity saved = copyRelationRepository.save(relation);
         routeCacheWriter.refreshMasterRoute(saved.getMasterAccount().getId());
         return toCopyRelationResponse(saved);
+    }
+
+    @Transactional
+    public void deleteCopyRelation(Long relationId) {
+        CopyRelationEntity relation = copyRelationRepository.findById(relationId)
+                .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
+        Long masterAccountId = relation.getMasterAccount().getId();
+        copyRelationRepository.delete(relation);
+        routeCacheWriter.refreshMasterRoute(masterAccountId);
     }
 
     @Transactional(readOnly = true)
@@ -221,8 +240,12 @@ public class AccountConfigService {
                 .orElseThrow(() -> new EntityNotFoundException("MT5 account not found: " + accountId));
     }
 
-    private void validateAccountsForRelation(Mt5AccountEntity masterAccount, Mt5AccountEntity followerAccount) {
-        if (!masterAccount.getUserId().equals(followerAccount.getUserId())) {
+    private void validateAccountsForRelation(
+            Mt5AccountEntity masterAccount,
+            Mt5AccountEntity followerAccount,
+            boolean allowCrossUser
+    ) {
+        if (!allowCrossUser && !masterAccount.getUserId().equals(followerAccount.getUserId())) {
             throw new IllegalArgumentException("Cross-user copy relations are not allowed");
         }
         ensureMasterCapable(masterAccount);

@@ -29,6 +29,41 @@
 7. 品种映射持久化
 8. 本地 bootstrap 命令行初始化
 9. 配置变更后自动刷新 Redis route/risk/account-binding 缓存
+10. master 账户级分享配置 `share_code` 持久化
+11. `share_id + share_code` 跨用户建立主从关系
+12. `join-by-share` 创建的新关系默认 `PAUSED`
+13. `share_code` 轮换只影响新绑定，不影响已 follow 的关系
+14. follower 可以主动解绑已有 follow 关系
+
+### 2.1 平台用户与认证
+
+1. `platform_users` 已落地
+2. 注册后自动生成 `platform_id`
+3. 注册后自动生成 `share_id`
+4. `POST /api/auth/register`
+5. `POST /api/auth/login`
+6. `POST /api/auth/logout`
+7. `GET /api/auth/me`
+8. `PUT /api/auth/me`
+9. 当前使用服务端 session + HttpOnly cookie
+10. `master_share_configs` 已落地
+10. `GET /api/me/share-profile`
+11. `POST /api/accounts/{accountId}/share-config`
+12. `PUT /api/accounts/{accountId}/share-config`
+13. `POST /api/copy-relations/join-by-share`
+14. `GET /api/me/accounts`
+15. `POST /api/me/accounts`
+16. `POST /api/me/accounts/{accountId}/risk-rule`
+17. `GET /api/me/copy-relations`
+18. `POST /api/me/copy-relations`
+19. `PUT /api/me/copy-relations/{relationId}`
+20. `DELETE /api/me/copy-relations/{relationId}`
+21. `POST /api/me/accounts/{accountId}/symbol-mappings`
+22. `GET /api/accounts/{accountId}`
+23. `GET /api/accounts/{accountId}/detail`
+24. `GET /api/accounts/{accountId}/risk-rule`
+25. `GET /api/accounts/{accountId}/relations`
+26. `GET /api/accounts/{accountId}/symbol-mappings`
 
 ### 3. Copy Engine
 
@@ -119,6 +154,12 @@
 5. WebSocket 断开时会标记运行态掉线
 6. 监控接口可查看账户状态、运行态、信号审计和 WebSocket 会话
 7. 比例跟单读取 runtime-state 时会强制检查快照新鲜度，恢复后的旧热数据不会直接参与真实下单
+8. `GET /api/monitor/dashboard`
+9. `GET /api/monitor/accounts/{accountId}/detail`
+10. `GET /api/monitor/accounts/{accountId}/commands`
+11. `GET /api/monitor/accounts/{accountId}/dispatches`
+12. `GET /api/monitor/traces/order`
+13. `GET /api/monitor/traces/position`
 
 ### 7. 工程维护
 
@@ -129,7 +170,9 @@
 5. 集成测试显式钉住 `test` profile，避免被本地 `SPRING_PROFILES_ACTIVE` 或 `COPIER_*` 污染
 6. runtime-state 已抽成统一 store，主端 ingest、follower heartbeat、monitor 查询、copy-engine 资金读取全部复用同一层
 7. Redis 备份/恢复文档和本地脚本已补齐，见 [docs/operations/redis-backup-recovery.md](./operations/redis-backup-recovery.md)
-8. 当前测试通过：`51/51`
+8. 独立前端控制台骨架已落在 `web-console/`，并已通过 `npm run build`
+9. 控制台已接上 `/app/settings/profile`
+10. 当前测试通过：`57/57`
 
 ### 8. Redis / JPA 优化说明
 
@@ -171,7 +214,25 @@
 1. 标准挂单新增、修改、删除已支持
 2. `BUY_STOP_LIMIT` / `SELL_STOP_LIMIT` 还没完成
 
+### 5. 账户与监控控制台
+
+1. `web-console/` React + Vite 控制台骨架已落地
+2. 已接入登录、注册、总览、账户列表、账户详情、分享中心、share 绑定、监控列表、监控详情和个人设置
+3. 当前前端已接入账户绑定、`share-config`、`join-by-share`、风控保存、关系创建/更新、follower 主动解绑、品种映射保存、关系管理列表、订单/持仓链路追踪和个人资料更新
+4. 当前监控页仍然是读模型为主，没有告警编排
+5. 当前仍然依赖后端 session + HttpOnly cookie，不是完整的前端权限体系
+
 ## 未完成
+
+### 1. 平台用户与控制台
+
+1. 平台用户注册、登录、登出的后端第一阶段已实现
+2. `platform_id`、`share_id`、`share_code` 的后端模型已实现
+3. 当前登录态下的账户台读接口和监控台聚合读接口已实现
+4. `web-console/` 已提供前端第一阶段骨架，但还不是完整可运营版本
+5. 账户绑定、风控、关系、映射的第一阶段登录态写接口已经落在 `/api/me/...`
+6. 旧的基础配置写接口仍然保留，主要用于兼容命令行初始化和历史调用路径
+7. 当前已确认的目标方案见 [docs/architecture/account-monitor-console.md](./architecture/account-monitor-console.md)
 
 ### 1. MQ 与事件骨干
 
@@ -181,7 +242,7 @@
 ### 2. 独立平台服务
 
 1. API Gateway
-2. User Auth Service
+2. User Auth Service 全量权限体系
 3. WebSocket Notification Service
 4. Agent Scheduler Service
 

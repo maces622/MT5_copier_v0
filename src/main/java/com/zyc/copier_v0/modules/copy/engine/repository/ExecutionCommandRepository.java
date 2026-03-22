@@ -13,6 +13,8 @@ public interface ExecutionCommandRepository extends JpaRepository<ExecutionComma
 
     List<ExecutionCommandEntity> findByFollowerAccountIdOrderByIdDesc(Long followerAccountId);
 
+    List<ExecutionCommandEntity> findByMasterAccountIdOrderByIdDesc(Long masterAccountId);
+
     List<ExecutionCommandEntity> findByMasterAccountIdAndMasterOrderIdOrderByIdAsc(Long masterAccountId, Long masterOrderId);
 
     List<ExecutionCommandEntity> findByMasterAccountIdAndMasterPositionIdOrderByIdAsc(Long masterAccountId, Long masterPositionId);

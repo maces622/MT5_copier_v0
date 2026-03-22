@@ -35,6 +35,11 @@ management:
         include: health,info
 
 copier:
+  auth:
+    session:
+      cookie-name: ${COPIER_AUTH_SESSION_COOKIE_NAME:COPIER_SESSION}
+      ttl: ${COPIER_AUTH_SESSION_TTL:P7D}
+      secure: ${COPIER_AUTH_SESSION_SECURE:false}
   security:
     credentials:
       secret: ${CREDENTIAL_SECRET:dev-credential-secret}

@@ -83,6 +83,12 @@ This is the key reason heartbeat traffic no longer turns into a full-rate JPA wr
 3. `GET /api/monitor/ws-sessions`
 4. `GET /api/monitor/accounts/{accountId}/signals`
 5. `GET /api/monitor/signals?accountKey=...`
+6. `GET /api/monitor/dashboard`
+7. `GET /api/monitor/accounts/{accountId}/detail`
+8. `GET /api/monitor/accounts/{accountId}/commands`
+9. `GET /api/monitor/accounts/{accountId}/dispatches`
+
+The first five APIs are existing monitor/runtime views. The last four are console-oriented read models built for the upcoming account/monitor UI.
 
 ## Config Keys
 

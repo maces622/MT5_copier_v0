@@ -9,5 +9,7 @@ public interface Mt5AccountRepository extends JpaRepository<Mt5AccountEntity, Lo
 
     Optional<Mt5AccountEntity> findByServerNameAndMt5Login(String serverName, Long mt5Login);
 
+    List<Mt5AccountEntity> findByUserIdOrderByIdAsc(Long userId);
+
     List<Mt5AccountEntity> findAllByOrderByIdAsc();
 }

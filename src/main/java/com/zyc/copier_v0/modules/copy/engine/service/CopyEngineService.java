@@ -138,6 +138,18 @@ public class CopyEngineService {
     }
 
     @Transactional(readOnly = true)
+    public List<ExecutionCommandResponse> findByAccountId(Long accountId) {
+        Map<Long, ExecutionCommandEntity> commands = executionCommandRepository.findByMasterAccountIdOrderByIdDesc(accountId).stream()
+                .collect(Collectors.toMap(ExecutionCommandEntity::getId, command -> command, (left, right) -> left));
+        executionCommandRepository.findByFollowerAccountIdOrderByIdDesc(accountId)
+                .forEach(command -> commands.putIfAbsent(command.getId(), command));
+        return commands.values().stream()
+                .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
+                .map(this::toResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
     public ExecutionTraceResponse findOrderTrace(Long masterAccountId, Long masterOrderId) {
         if (masterAccountId == null || masterOrderId == null) {
             return emptyTrace(masterAccountId, masterOrderId, null);
@@ -176,6 +188,25 @@ public class CopyEngineService {
             return Collections.emptyList();
         }
         return followerDispatchOutboxRepository.findByMasterEventIdOrderByIdAsc(masterEventId).stream()
+                .map(this::toDispatchResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<FollowerDispatchOutboxResponse> findDispatchesByAccountId(Long accountId) {
+        Map<Long, FollowerDispatchOutboxEntity> dispatches = followerDispatchOutboxRepository.findByFollowerAccountIdOrderByIdDesc(accountId).stream()
+                .collect(Collectors.toMap(FollowerDispatchOutboxEntity::getId, dispatch -> dispatch, (left, right) -> left));
+
+        List<Long> relatedCommandIds = executionCommandRepository.findByMasterAccountIdOrderByIdDesc(accountId).stream()
+                .map(ExecutionCommandEntity::getId)
+                .toList();
+        if (!relatedCommandIds.isEmpty()) {
+            followerDispatchOutboxRepository.findByExecutionCommandIdInOrderByIdAsc(relatedCommandIds)
+                    .forEach(dispatch -> dispatches.putIfAbsent(dispatch.getId(), dispatch));
+        }
+
+        return dispatches.values().stream()
+                .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
                 .map(this::toDispatchResponse)
                 .toList();
     }

@@ -1,6 +1,7 @@
 package com.zyc.copier_v0.modules.account.config.web;
 
 import com.zyc.copier_v0.modules.account.config.api.ApiErrorResponse;
+import com.zyc.copier_v0.modules.user.auth.service.UnauthorizedException;
 import javax.persistence.EntityNotFoundException;
 import javax.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -35,6 +36,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleConflict(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiErrorResponse("CONFLICT", ex.getMessage()));
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnauthorized(UnauthorizedException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ApiErrorResponse("UNAUTHORIZED", ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

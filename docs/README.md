@@ -33,22 +33,27 @@
 
 1. [总体架构](./architecture/overall-architecture.md)
 2. [安全与可靠性](./architecture/security-and-reliability.md)
-3. [MT5 WebSocket 协议](./contracts/mt5-websocket-signal.md)
-4. [MT5 Bridge 服务](./modules/mt5-bridge-service.md)
-5. [迭代工作流](./process/iteration-cycle.md)
+3. [账户与监控控制台方案](./architecture/account-monitor-console.md)
+4. [用户认证服务](./modules/user-auth-service.md)
+5. [MT5 WebSocket 协议](./contracts/mt5-websocket-signal.md)
+6. [MT5 Bridge 服务](./modules/mt5-bridge-service.md)
+7. [迭代工作流](./process/iteration-cycle.md)
 
 这些文档里既有已落地内容，也有后续目标：
 
 1. MT5 上行接入、主从配置、Copy Engine、Follower 下行、监控聚合已经落地
-2. MQ、多服务拆分、完整多实例投递保障仍属于后续目标
-3. 多实例 follower 实时推送当前是“Redis pub/sub 通知 + 持有 websocket 的实例执行推送”
+2. 平台用户注册登录、`share_id + share_code` 绑定，以及当前登录用户视角的账户台/监控台后端读接口第一阶段已落地
+3. `share_code` 轮换只影响新绑定，不影响已 follow 的关系；follower 侧可以主动解绑
+4. `web-console/` 独立前端骨架已落地，已接上登录、总览、账户、关系管理、分享绑定、监控详情、链路追踪、个人设置，以及账户绑定/风控/关系/映射/解绑的第一阶段写操作
+5. 这批前端写操作已经优先切到 `/api/me/...` 登录态接口，不再继续把 `userId` 暴露给前端
+6. MQ、多服务拆分、完整多实例投递保障仍属于后续目标
+7. 多实例 follower 实时推送当前是“Redis pub/sub 通知 + 持有 websocket 的实例执行推送”
 
 ## 仅目标设计 / 未实现
 
 1. [API Gateway](./modules/api-gateway.md)
-2. [用户认证服务](./modules/user-auth-service.md)
-3. [实时通知服务](./modules/websocket-notification-service.md)
-4. [Agent 调度服务](./modules/agent-service.md)
+2. [实时通知服务](./modules/websocket-notification-service.md)
+3. [Agent 调度服务](./modules/agent-service.md)
 
 ## 当前代码重点
 
@@ -57,7 +62,8 @@
 1. [实现状态总表](./implementation-status.md)
 2. `src/main/resources/application-local.yml`
 3. `bootstrap/local.example.json`
-4. [Redis 备份与恢复](./operations/redis-backup-recovery.md)
+4. `web-console/`
+5. [Redis 备份与恢复](./operations/redis-backup-recovery.md)
 
 本地开发注意：
 
@@ -66,3 +72,4 @@
 3. “节点”在本文档里只表示一个 Java 服务实例；本地只起一个 `spring-boot:run` 时，就是单节点。
 4. 单节点本地联调时，推荐把 `copier.mt5.follower-exec.realtime-dispatch.backend` 设为 `local`。
 5. Redis-first 读取、runtime-state Redis-first、route fallback 批量回源、乐观锁、资金快照新鲜度门禁都已落地；哪些已实现、哪些刻意不做、哪些还没做，以 [implementation-status.md](./implementation-status.md) 为准。
+6. 前端本地开发可进入 `web-console/` 后执行 `npm install`、`npm run dev`；Vite 已代理 `/api`、`/actuator` 和 `/ws` 到 `127.0.0.1:8080`。

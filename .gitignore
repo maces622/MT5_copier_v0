@@ -28,6 +28,8 @@ target/
 build/
 !**/src/main/**/build/
 !**/src/test/**/build/
+web-console/node_modules/
+web-console/dist/
 
 ### VS Code ###
 .vscode/
