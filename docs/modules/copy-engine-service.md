@@ -1,123 +1,177 @@
-# 实时跟单引擎
+# 跟单引擎
 
-## 当前实现状态
+## 目标
 
-当前仓库已落地第一版最小闭环，覆盖：
+Copy Engine 是当前系统的核心决策层，负责回答三个问题：
 
-1. 监听已接收的 MT5 `DEAL` 事件
-2. 根据主账号 `server + login` 映射平台内部 master account
-3. 读取 active 跟单关系
-4. 生成本地 `execution_commands` 记录
-5. 对固定手数、倍率手数、跟随原手数做基础换算
-6. 对品种白黑名单、最大手数、参数缺失做拒绝记录
+1. 这笔主端信号要不要复制
+2. 要复制给哪些 follower
+3. 每个 follower 应该以什么指令、什么手数执行
 
-当前仓库尚未覆盖：
+## 当前真实链路
 
-1. MQ 投递
-2. 保证金检查
-3. 滑点控制
-4. 真实 MT5 下单
-5. 执行回执回写
+主链路现在是：
 
-## 1. 职责
+1. 主端 EA 通过 `/ws/trade` 上报 `DEAL / ORDER`
+2. Signal Ingest 标准化后发布进进程内事件总线
+3. Copy Engine 消费事件
+4. 先读 Redis-first 的 account binding / route / risk / runtime-state
+5. 生成 `execution_commands`
+6. 为 `READY` 指令生成 `follower_dispatch_outbox`
+7. follower-exec 模块通过 websocket 实时下发
 
-Copy Engine 是系统的核心决策层，负责回答三个问题：
+## 当前支持的复制模式
 
-1. 谁需要跟这笔单
-2. 每个跟单账户该跟多少
-3. 哪些账户应该被风控拦截
+1. `FIXED_LOT`
+2. `BALANCE_RATIO`
+3. `EQUITY_RATIO`
+4. `FOLLOW_MASTER`
 
-## 2. 输入
+默认新建主从关系时使用 `BALANCE_RATIO`。
 
-主要输入 Topic：
+## 当前支持的指令类型
 
-1. `signal.deal.v1`
-2. `signal.order.v1`
-3. `signal.equity.v1`
-4. `copy.relation.changed.v1`
-5. `risk.rule.changed.v1`
+1. `OPEN_POSITION`
+2. `CLOSE_POSITION`
+3. `SYNC_TP_SL`
+4. `CREATE_PENDING_ORDER`
+5. `UPDATE_PENDING_ORDER`
+6. `CANCEL_PENDING_ORDER`
 
-高频读依赖：
+## 核心执行逻辑
 
-1. Redis 路由表
-2. Redis 净值/保证金快照
-3. Redis 去重键
+### 1. 账户绑定
 
-## 3. 输出
+主端信号进入后，先通过 `server + login` 找到平台内 `masterAccountId`。
 
-1. `execution.command.v1`
-2. `monitor.alert.v1`
-3. `audit.action.v1`
+当前已经做成 Redis-first：
 
-## 4. 核心处理流程
+1. `copy:account:binding:{server}:{login}`
+2. miss 时回源数据库并回填
 
-以主账号成交事件为例：
+### 2. 路由与风控装配
 
-1. 消费 `DEAL` 事件
-2. 基于 `event_id` 去重
-3. 从 Redis 读取主账号路由表
-4. 并行计算每个跟单账户的目标手数
-5. 校验风控约束
-6. 生成执行命令
-7. 按目标账户分组后写入执行 Topic
+Copy Engine 再读取：
 
-## 5. 手数计算策略
+1. `copy:route:master:{masterAccountId}`
+2. `copy:account:risk:{followerAccountId}`
 
-第一阶段建议先支持以下模式：
+route/risk 都是 Redis-first。
 
-1. 固定手数
-2. 按余额比例
-3. 按净值比例
-4. 跟随主账号原始手数
+### 3. 手数计算
 
-输出手数前还要统一经过：
+当前比例开仓的核心公式是：
 
-1. 最小手数校正
-2. 步长对齐
-3. 最大手数截断
-4. 账户可用保证金检查
+`主手数 * 风险比例 * 账户资金缩放比例`
 
-## 6. 风控拦截点
+其中：
 
-建议按顺序执行：
+1. 风险比例来自 `balanceRatio`，默认 `1.0`
+2. 账户资金缩放比例来自 `followerFunds / masterFunds`
 
-1. 账户状态是否允许交易
-2. 品种是否在白名单/黑名单中
-3. 单笔手数是否超过上限
-4. 当前回撤和日亏是否超限
-5. 保证金是否足够
-6. 是否触发价格偏差阈值
+### 4. 比例平仓
 
-## 7. 并发与削峰设计
+平仓不再按绝对手数硬平，而是：
 
-高并发场景下不要逐个账户同步 RPC，下列原则必须成立：
+1. 主端部分平仓时，生成 `closeRatio`
+2. follower 按自己的当前仓位同比例平仓
+3. 最后一笔全平时，生成 `closeAll=true`
 
-1. 主账号事件先入 MQ
-2. 同一主账号单分区顺序消费
-3. 单次事件内部对跟单账户并发计算
-4. 执行命令批量投递，不阻塞信号主线程
+### 5. 点差限制
 
-可以接受“部分跟单账户稍后几十毫秒执行”，不能接受“单个主账号洪峰拖垮全局”。
+当前逻辑是：
 
-## 8. 幂等模型
+1. 默认关闭
+2. 开启后只限制 `OPEN_POSITION`
+3. `CLOSE_POSITION` 不做点差限制
 
-建议使用两级键：
+### 6. 品种元信息
 
-1. 事件级：`master_event_id`
-2. 命令级：`master_event_id + follower_account_id + action_hash`
+dispatch payload 当前已包含：
 
-这样可避免：
+1. `contractSize`
+2. `volumeMin`
+3. `volumeMax`
+4. `volumeStep`
+5. `point`
+6. `tickSize`
+7. `tickValue`
+8. 币种信息
 
-1. 上游重复发信号
-2. 引擎重平衡或消费重试造成重复下单
+用于 follower EA 做本地手数和交易参数校验。
 
-## 9. 第一阶段边界
+## 当前已落地的优化
 
-先做最小闭环，不要一开始就处理所有复杂交易场景。第一阶段只做：
+### 1. Redis-first 热路径
 
-1. 市价单开仓/平仓
-2. 固定手数和比例手数
-3. 基础保证金检查
-4. 简单止损止盈跟随
+高频热路径不再直接依赖 JPA 拼装主从关系，而是优先读 Redis：
 
-挂单、反向跟单、分批成交、复杂价格保护留到后续迭代。
+1. account binding
+2. route snapshot
+3. risk snapshot
+4. runtime-state
+
+### 2. 数据库真源保留
+
+虽然读路径已经 Redis-first，但这两个核心表仍然坚持直写数据库：
+
+1. `execution_commands`
+2. `follower_dispatch_outbox`
+
+这是刻意保留的设计，因为它们属于核心交易状态，不能先写 Redis 再说。
+
+### 3. Route fallback 去 N+1
+
+Redis miss 或 warmup 时，route fallback 已经改成：
+
+1. 批量查关系
+2. 批量查 risk rules
+3. 批量查 symbol mappings
+4. 在内存组装 snapshot
+
+不再按 follower 逐个查库。
+
+### 4. 比例跟单资金快照门禁
+
+这是当前最关键的安全优化之一。
+
+`BALANCE_RATIO / EQUITY_RATIO` 现在会强制检查 follower runtime-state 是否：
+
+1. 存在
+2. 新鲜
+3. 余额或净值有效
+
+如果不满足，直接：
+
+1. `status = REJECTED`
+2. `rejectReason = ACCOUNT_FUNDS_UNAVAILABLE`
+
+不再偷偷回退成 `1.0` 倍缩放继续下单。
+
+### 5. 幂等保护
+
+同一 follower 对同一 `masterEventId` 不会重复生成 command。
+
+### 6. 乐观锁
+
+核心执行表已经补了：
+
+1. `row_version`
+2. 关键索引
+
+目的是减小并发更新冲突风险。
+
+## 风险与边界
+
+1. 当前没有把 command/outbox 放进 Redis List 做异步削峰
+2. 当前没有 broker 成交后的二次滑点核对
+3. 当前没有 margin 预校验
+4. 当前没有跨实例 durable claim/lease 补偿 worker
+
+这些没做是刻意取舍，不是遗漏。
+
+## 当前未完成项
+
+1. `BUY_STOP_LIMIT / SELL_STOP_LIMIT` 还未支持
+2. 更复杂的 broker 执行编排未实现
+3. 核心执行链路外的异步审计批量写还未单独拆出

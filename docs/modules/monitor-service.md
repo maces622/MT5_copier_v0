@@ -36,6 +36,31 @@ Current code scope:
 4. Database persistence is throttled by `copier.monitor.runtime-state.database-sync-interval`
 5. Disconnect events force a database snapshot write immediately
 
+### Heartbeat to Redis to DB flow
+
+The current heartbeat path is intentionally designed as `Redis-first, DB-throttled`:
+
+1. A master or follower websocket message arrives
+2. The runtime-state store normalizes the latest connection status, timestamps, balance, and equity
+3. Redis is updated first:
+   `copy:runtime:state:{server}:{login}`
+   `copy:runtime:account:{accountId}`
+   `copy:runtime:index`
+4. The store checks the last database sync marker:
+   `copy:runtime:db-sync:{server}:{login}`
+5. If the throttling window has not expired, the write stops at Redis and does not hit JPA
+6. If the throttling window has expired, the latest runtime-state snapshot is also persisted to MySQL
+7. If the websocket disconnects, the runtime-state is marked `DISCONNECTED` and the snapshot is forced to MySQL immediately
+
+This is the key reason heartbeat traffic no longer turns into a full-rate JPA write path.
+
+### Why this matters
+
+1. Monitoring APIs can read fresh runtime-state without waiting for database flushes
+2. Ratio-copy reads follower funds from Redis-first runtime-state instead of querying the runtime-state table on every trade
+3. Database snapshots still exist for restart visibility, audit support, and controlled recovery
+4. After Redis restore, stale runtime-state still cannot be used for ratio-copy unless it passes the freshness gate
+
 ### Read path
 
 1. `GET /api/monitor/runtime-states` reads the unified runtime-state store

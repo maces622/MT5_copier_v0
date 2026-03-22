@@ -1,144 +1,150 @@
 # 账户与配置服务
 
-## 当前实现状态
+## 目标
 
-当前仓库已落地第一版实现，覆盖：
+这个模块负责维护跟单系统的静态配置真源：
 
 1. MT5 账户绑定
-2. 凭证加密存储
-3. 风控规则保存
-4. 主从关系创建与更新
-5. 防环校验
-6. Redis 路由缓存抽象，支持 `log` 和 `redis` 两种 backend
+2. 主从关系
+3. 风控规则
+4. 品种映射
+5. 供 Copy Engine 使用的 route/risk/account-binding 缓存
 
-当前仓库尚未覆盖：
+当前实现里，MariaDB 是配置真源，Redis 是热缓存层。
 
-1. 凭证解密读取的受控流程
-2. 审计事件发布
-3. 配置变更 MQ 广播
-4. 更细粒度的关系级风控参数
+## 当前已实现能力
 
-## 1. 职责
+1. `POST /api/accounts` 绑定或更新 MT5 账户
+2. `POST /api/risk-rules` upsert follower 风控
+3. `POST /api/copy-relations` 创建主从关系
+4. `PUT /api/copy-relations/{relationId}` 更新关系状态和模式
+5. `POST /api/symbol-mappings` upsert follower 品种映射
+6. `GET /api/accounts`
+7. `GET /api/copy-relations/master/{masterAccountId}`
+8. 本地 bootstrap 命令行初始化
 
-这是平台配置中心，负责：
+## 数据模型
 
-1. 绑定 MT5 账户
-2. 保存主从跟单关系
-3. 管理风控参数
-4. 生成并刷新 Redis 路由表
-5. 防止循环跟单
-6. 凭证加密与版本管理
+### 1. MT5 账户
 
-## 2. 核心对象
+核心字段：
 
-### 2.1 MT5 账户
-
-建议字段：
-
-1. `account_id`
-2. `user_id`
-3. `broker_name`
-4. `server_name`
-5. `mt5_login`
-6. `credential_ciphertext`
-7. `credential_version`
-8. `account_role`，例如 `MASTER` / `FOLLOWER` / `BOTH`
-9. `status`
-
-### 2.2 跟单关系
-
-建议字段：
-
-1. `relation_id`
-2. `master_account_id`
-3. `follower_account_id`
-4. `copy_mode`
+1. `userId`
+2. `serverName`
+3. `mt5Login`
+4. `accountRole`
 5. `status`
-6. `priority`
-7. `config_version`
+6. `credentialCiphertext`
+7. `credentialVersion`
 
-### 2.3 风控规则
+说明：
 
-建议字段：
+1. Java 当前不直接登录 MT5，所以 WebSocket-only 账户可以不填 `credential`
+2. 如果传了 `credential`，仍会按受控方式加密落库
 
-1. `max_lot`
-2. `fixed_lot`
-3. `balance_ratio`
-4. `max_slippage_points`
-5. `max_daily_loss`
-6. `max_drawdown_pct`
-7. `allowed_symbols`
-8. `blocked_symbols`
-9. `follow_tp_sl`
-10. `reverse_follow`
+### 2. 主从关系
 
-## 3. Redis 路由缓存
+核心字段：
 
-Copy Engine 核心链路不能频繁查 MySQL，因此本服务负责把主从关系投影到 Redis。
+1. `masterAccountId`
+2. `followerAccountId`
+3. `copyMode`
+4. `status`
+5. `priority`
+6. `configVersion`
 
-建议键：
+当前默认模式已经切到 `BALANCE_RATIO`。
+
+### 3. 风控规则
+
+核心字段：
+
+1. `fixedLot`
+2. `balanceRatio`
+3. `maxLot`
+4. `maxSlippagePoints`
+5. `maxSlippagePips`
+6. `allowedSymbols`
+7. `blockedSymbols`
+8. `followTpSl`
+9. `reverseFollow`
+
+## Redis 缓存职责
+
+这个模块负责把数据库真源投影成 Redis 快照，供高频路径直接读。
+
+当前 key：
 
 1. `copy:route:master:{masterAccountId}`
 2. `copy:route:version:{masterAccountId}`
 3. `copy:account:risk:{followerAccountId}`
+4. `copy:account:binding:{server}:{login}`
 
-`copy:route:master:{masterAccountId}` 中至少包含：
+这些缓存都不是业务真源，丢失后可以从 MariaDB 重建。
 
-1. 跟单账号列表
-2. 跟单模式
-3. 风控快照
-4. 配置版本
+## 当前已落地的优化
 
-## 4. 防环设计
+### 1. Redis-first 配置读取
 
-保存主从关系前必须做有向图校验。
+Copy Engine 现在不会在热路径上频繁直接扫关系表，而是优先读：
 
-规则：
+1. master account binding
+2. master route snapshot
+3. follower risk snapshot
 
-1. 不允许自跟单
-2. 不允许形成环
-3. 不允许跨租户非法引用
+只有 Redis miss 时才回源数据库并回填。
 
-建议在写入事务内完成：
+### 2. 启动预热
 
-1. 先读取当前关系图
-2. 临时加入新边
-3. 做 DAG 检查
-4. 成功后落库并刷新 Redis
+服务启动后会预热：
 
-## 5. 凭证安全
+1. route
+2. risk
+3. account binding
 
-1. 密码只允许在受控服务内解密。
-2. 凭证字段加密后落 MySQL。
-3. 凭证更新要产生新版本号。
-4. 凭证读取需要审计。
+这样本地联调和服务重启后的第一笔单不会总是打到数据库冷路径。
 
-## 6. 对外接口
+### 3. Route fallback 批量装配
 
-建议第一阶段：
+之前 route fallback 在 miss/warmup 场景会按 follower 逐个查：
 
-1. `POST /accounts`
-2. `GET /accounts`
-3. `POST /copy-relations`
-4. `PUT /copy-relations/{id}`
-5. `POST /risk-rules`
-6. `GET /copy-relations/master/{masterAccountId}`
+1. risk rule
+2. symbol mapping
 
-## 7. 发布事件
+现在已经改成批量查询后在内存组装，消掉了这一段的 N+1。
 
-建议发布：
+### 4. 乐观锁和索引
 
-1. `account.bound.v1`
-2. `copy.relation.changed.v1`
-3. `risk.rule.changed.v1`
+核心配置表都加了：
 
-这样 Copy Engine 和 Monitor 能及时刷新本地缓存。
+1. 关键索引
+2. `@Version row_version`
 
-## 8. 第一阶段实现重点
+目的是降低并发配置更新时的覆盖风险，而不是依赖裸 `save()`。
 
-优先保证下面四点，不要一开始就做过多 UI：
+### 5. Bootstrap 初始化
 
-1. 账户绑定
-2. 跟单关系建模
-3. 风控快照写 Redis
-4. 防环校验
+为了保留“命令行初始化”的使用习惯，当前仓库已经支持：
+
+1. 用 JSON 定义账户、关系、风控、映射
+2. 一次性落库
+3. 自动刷新缓存
+
+## 设计边界
+
+1. 这个模块不负责真实下单
+2. 这个模块不负责交易审计流水
+3. 这个模块不把 Redis 当真源
+4. 这个模块当前没有对外 MQ 广播配置变更
+
+## 当前未完成项
+
+1. Redisson 分布式锁还没有引入
+2. 配置变更事件还没有对外发布到 MQ
+3. 更细粒度的关系级风控参数还没有补齐
+
+## 本地联调建议
+
+1. 先用 bootstrap 或 REST API 把账户、关系、风控、映射写进 MariaDB
+2. 再启动 `local` profile 服务
+3. 让 Redis 只承担缓存，不手工往 Redis 写业务配置
