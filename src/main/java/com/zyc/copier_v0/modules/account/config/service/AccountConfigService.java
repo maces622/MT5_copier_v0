@@ -21,11 +21,14 @@ import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepositor
 import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.account.config.repository.RiskRuleRepository;
 import com.zyc.copier_v0.modules.account.config.repository.SymbolMappingRepository;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import javax.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -39,6 +42,8 @@ public class AccountConfigService {
     private final CopyRelationGraphValidator graphValidator;
     private final CopyRouteCacheWriter routeCacheWriter;
     private final CopyRouteSnapshotFactory routeSnapshotFactory;
+    private final RedisRouteLockManager lockManager;
+    private final TransactionTemplate transactionTemplate;
 
     public AccountConfigService(
             Mt5AccountRepository mt5AccountRepository,
@@ -48,7 +53,9 @@ public class AccountConfigService {
             CredentialCipherService credentialCipherService,
             CopyRelationGraphValidator graphValidator,
             CopyRouteCacheWriter routeCacheWriter,
-            CopyRouteSnapshotFactory routeSnapshotFactory
+            CopyRouteSnapshotFactory routeSnapshotFactory,
+            RedisRouteLockManager lockManager,
+            PlatformTransactionManager transactionManager
     ) {
         this.mt5AccountRepository = mt5AccountRepository;
         this.riskRuleRepository = riskRuleRepository;
@@ -58,6 +65,8 @@ public class AccountConfigService {
         this.graphValidator = graphValidator;
         this.routeCacheWriter = routeCacheWriter;
         this.routeSnapshotFactory = routeSnapshotFactory;
+        this.lockManager = lockManager;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     @Transactional
@@ -91,129 +100,139 @@ public class AccountConfigService {
                 .toList();
     }
 
-    @Transactional
     public RiskRuleResponse saveRiskRule(SaveRiskRuleRequest request) {
-        Mt5AccountEntity account = loadAccount(request.getAccountId());
-        ensureFollowerCapable(account);
+        Long accountId = request.getAccountId();
+        List<Long> masterIds = routeSnapshotFactory.findMastersByFollower(accountId);
+        return lockManager.executeWithMasterLocks(masterIds, 5000L, () -> transactionTemplate.execute(status -> {
+            Mt5AccountEntity account = loadAccount(accountId);
+            ensureFollowerCapable(account);
 
-        RiskRuleEntity riskRule = riskRuleRepository.findByAccount_Id(account.getId()).orElseGet(RiskRuleEntity::new);
-        riskRule.setAccount(account);
-        riskRule.setMaxLot(request.getMaxLot());
-        riskRule.setFixedLot(request.getFixedLot());
-        riskRule.setBalanceRatio(request.getBalanceRatio());
-        riskRule.setMaxSlippagePoints(request.getMaxSlippagePoints());
-        riskRule.setMaxSlippagePips(request.getMaxSlippagePips());
-        riskRule.setMaxSlippagePrice(request.getMaxSlippagePrice());
-        riskRule.setMaxDailyLoss(request.getMaxDailyLoss());
-        riskRule.setMaxDrawdownPct(request.getMaxDrawdownPct());
-        riskRule.setAllowedSymbols(trimToNull(request.getAllowedSymbols()));
-        riskRule.setBlockedSymbols(trimToNull(request.getBlockedSymbols()));
-        riskRule.setFollowTpSl(Boolean.TRUE.equals(request.getFollowTpSl()));
-        riskRule.setReverseFollow(Boolean.TRUE.equals(request.getReverseFollow()));
+            RiskRuleEntity riskRule = riskRuleRepository.findByAccount_Id(account.getId()).orElseGet(RiskRuleEntity::new);
+            riskRule.setAccount(account);
+            riskRule.setMaxLot(request.getMaxLot());
+            riskRule.setFixedLot(request.getFixedLot());
+            riskRule.setBalanceRatio(request.getBalanceRatio());
+            riskRule.setMaxSlippagePoints(request.getMaxSlippagePoints());
+            riskRule.setMaxSlippagePips(request.getMaxSlippagePips());
+            riskRule.setMaxSlippagePrice(request.getMaxSlippagePrice());
+            riskRule.setMaxDailyLoss(request.getMaxDailyLoss());
+            riskRule.setMaxDrawdownPct(request.getMaxDrawdownPct());
+            riskRule.setAllowedSymbols(trimToNull(request.getAllowedSymbols()));
+            riskRule.setBlockedSymbols(trimToNull(request.getBlockedSymbols()));
+            riskRule.setFollowTpSl(Boolean.TRUE.equals(request.getFollowTpSl()));
+            riskRule.setReverseFollow(Boolean.TRUE.equals(request.getReverseFollow()));
 
-        RiskRuleEntity saved = riskRuleRepository.save(riskRule);
-        routeCacheWriter.refreshFollowerRisk(account.getId());
-        for (Long masterId : routeSnapshotFactory.findMastersByFollower(account.getId())) {
-            routeCacheWriter.refreshMasterRoute(masterId);
-        }
-        return toRiskRuleResponse(saved);
+            RiskRuleEntity saved = riskRuleRepository.save(riskRule);
+            routeCacheWriter.refreshFollowerRisk(account.getId());
+            for (Long masterId : masterIds) {
+                routeCacheWriter.refreshMasterRoute(masterId);
+            }
+            return toRiskRuleResponse(saved);
+        }));
     }
 
-    @Transactional
     public CopyRelationResponse createCopyRelation(CreateCopyRelationRequest request) {
         return createCopyRelationInternal(request, false);
     }
 
-    @Transactional
     public CopyRelationResponse createSharedCopyRelation(CreateCopyRelationRequest request) {
         return createCopyRelationInternal(request, true);
     }
 
-    @Transactional
     protected CopyRelationResponse createCopyRelationInternal(CreateCopyRelationRequest request, boolean allowCrossUser) {
-        Mt5AccountEntity masterAccount = loadAccount(request.getMasterAccountId());
-        Mt5AccountEntity followerAccount = loadAccount(request.getFollowerAccountId());
-        validateAccountsForRelation(masterAccount, followerAccount, allowCrossUser);
+        return lockManager.executeWithMasterLocks(Collections.singletonList(request.getMasterAccountId()), 5000L, () -> transactionTemplate.execute(status -> {
+            Mt5AccountEntity masterAccount = loadAccount(request.getMasterAccountId());
+            Mt5AccountEntity followerAccount = loadAccount(request.getFollowerAccountId());
+            validateAccountsForRelation(masterAccount, followerAccount, allowCrossUser);
 
-        copyRelationRepository.findByMasterAccount_IdAndFollowerAccount_Id(masterAccount.getId(), followerAccount.getId())
-                .ifPresent(existing -> {
-                    throw new IllegalStateException("Copy relation already exists");
-                });
+            copyRelationRepository.findByMasterAccount_IdAndFollowerAccount_Id(masterAccount.getId(), followerAccount.getId())
+                    .ifPresent(existing -> {
+                        throw new IllegalStateException("Copy relation already exists");
+                    });
 
-        graphValidator.validate(null, masterAccount.getId(), followerAccount.getId(), request.getStatus());
+            graphValidator.validate(null, masterAccount.getId(), followerAccount.getId(), request.getStatus());
 
-        CopyRelationEntity relation = new CopyRelationEntity();
-        relation.setMasterAccount(masterAccount);
-        relation.setFollowerAccount(followerAccount);
-        relation.setCopyMode(request.getCopyMode());
-        relation.setStatus(request.getStatus());
-        relation.setPriority(defaultPriority(request.getPriority()));
-        relation.setConfigVersion(1L);
-
-        CopyRelationEntity saved = copyRelationRepository.save(relation);
-        routeCacheWriter.refreshMasterRoute(masterAccount.getId());
-        return toCopyRelationResponse(saved);
-    }
-
-    @Transactional
-    public CopyRelationResponse updateCopyRelation(Long relationId, UpdateCopyRelationRequest request) {
-        CopyRelationEntity relation = copyRelationRepository.findById(relationId)
-                .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
-
-        if (request.getCopyMode() != null) {
+            CopyRelationEntity relation = new CopyRelationEntity();
+            relation.setMasterAccount(masterAccount);
+            relation.setFollowerAccount(followerAccount);
             relation.setCopyMode(request.getCopyMode());
-        }
-        if (request.getStatus() != null) {
-            graphValidator.validate(
-                    relation.getId(),
-                    relation.getMasterAccount().getId(),
-                    relation.getFollowerAccount().getId(),
-                    request.getStatus()
-            );
             relation.setStatus(request.getStatus());
-        }
-        if (request.getPriority() != null) {
             relation.setPriority(defaultPriority(request.getPriority()));
-        }
-        relation.setConfigVersion(relation.getConfigVersion() + 1);
+            relation.setConfigVersion(1L);
 
-        CopyRelationEntity saved = copyRelationRepository.save(relation);
-        routeCacheWriter.refreshMasterRoute(saved.getMasterAccount().getId());
-        return toCopyRelationResponse(saved);
+            CopyRelationEntity saved = copyRelationRepository.save(relation);
+            routeCacheWriter.refreshMasterRoute(masterAccount.getId());
+            return toCopyRelationResponse(saved);
+        }));
     }
 
-    @Transactional
-    public void deleteCopyRelation(Long relationId) {
-        CopyRelationEntity relation = copyRelationRepository.findById(relationId)
+    public CopyRelationResponse updateCopyRelation(Long relationId, UpdateCopyRelationRequest request) {
+        CopyRelationEntity initialRelation = copyRelationRepository.findById(relationId)
                 .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
-        Long masterAccountId = relation.getMasterAccount().getId();
-        copyRelationRepository.delete(relation);
-        routeCacheWriter.refreshMasterRoute(masterAccountId);
+        Long masterAccountId = initialRelation.getMasterAccount().getId();
+        return lockManager.executeWithMasterLocks(Collections.singletonList(masterAccountId), 5000L, () -> transactionTemplate.execute(status -> {
+            CopyRelationEntity relation = copyRelationRepository.findById(relationId)
+                    .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
+
+            if (request.getCopyMode() != null) {
+                relation.setCopyMode(request.getCopyMode());
+            }
+            if (request.getStatus() != null) {
+                graphValidator.validate(
+                        relation.getId(),
+                        relation.getMasterAccount().getId(),
+                        relation.getFollowerAccount().getId(),
+                        request.getStatus()
+                );
+                relation.setStatus(request.getStatus());
+            }
+            if (request.getPriority() != null) {
+                relation.setPriority(defaultPriority(request.getPriority()));
+            }
+            relation.setConfigVersion(relation.getConfigVersion() + 1);
+
+            CopyRelationEntity saved = copyRelationRepository.save(relation);
+            routeCacheWriter.refreshMasterRoute(saved.getMasterAccount().getId());
+            return toCopyRelationResponse(saved);
+        }));
     }
 
-    @Transactional
-    public void deleteFollowerAccount(Long accountId) {
-        Mt5AccountEntity account = loadAccount(accountId);
-        if (account.getAccountRole() != Mt5AccountRole.FOLLOWER) {
-            throw new IllegalArgumentException("Only FOLLOWER accounts can be deleted");
-        }
-
-        List<CopyRelationEntity> followerRelations = copyRelationRepository.findByFollowerAccount_IdOrderByPriorityAscIdAsc(accountId);
-        List<Long> masterAccountIds = followerRelations.stream()
-                .map(relation -> relation.getMasterAccount().getId())
-                .distinct()
-                .toList();
-
-        copyRelationRepository.deleteAll(followerRelations);
-        riskRuleRepository.deleteByAccount_Id(accountId);
-        symbolMappingRepository.deleteByFollowerAccount_Id(accountId);
-        mt5AccountRepository.delete(account);
-
-        for (Long masterAccountId : masterAccountIds) {
+    public void deleteCopyRelation(Long relationId) {
+        CopyRelationEntity initialRelation = copyRelationRepository.findById(relationId)
+                .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
+        Long masterAccountId = initialRelation.getMasterAccount().getId();
+        lockManager.executeWithMasterLocks(Collections.singletonList(masterAccountId), 5000L, () -> transactionTemplate.execute(status -> {
+            CopyRelationEntity relation = copyRelationRepository.findById(relationId).orElse(null);
+            if (relation != null) {
+                copyRelationRepository.delete(relation);
+            }
             routeCacheWriter.refreshMasterRoute(masterAccountId);
-        }
-        routeCacheWriter.evictFollowerRisk(accountId);
-        routeCacheWriter.evictAccountBinding(account.getServerName(), account.getMt5Login());
+            return null;
+        }));
+    }
+
+    public void deleteFollowerAccount(Long accountId) {
+        List<Long> masterAccountIds = copyRelationRepository.findByFollowerAccount_IdOrderByPriorityAscIdAsc(accountId)
+                .stream().map(relation -> relation.getMasterAccount().getId()).distinct().toList();
+        lockManager.executeWithMasterLocks(masterAccountIds, 5000L, () -> transactionTemplate.execute(status -> {
+            Mt5AccountEntity account = loadAccount(accountId);
+            if (account.getAccountRole() != Mt5AccountRole.FOLLOWER) {
+                throw new IllegalArgumentException("Only FOLLOWER accounts can be deleted");
+            }
+
+            List<CopyRelationEntity> followerRelations = copyRelationRepository.findByFollowerAccount_IdOrderByPriorityAscIdAsc(accountId);
+            copyRelationRepository.deleteAll(followerRelations);
+            riskRuleRepository.deleteByAccount_Id(accountId);
+            symbolMappingRepository.deleteByFollowerAccount_Id(accountId);
+            mt5AccountRepository.delete(account);
+
+            for (Long masterId : masterAccountIds) {
+                routeCacheWriter.refreshMasterRoute(masterId);
+            }
+            routeCacheWriter.evictFollowerRisk(accountId);
+            routeCacheWriter.evictAccountBinding(account.getServerName(), account.getMt5Login());
+            return null;
+        }));
     }
 
     @Transactional(readOnly = true)
@@ -226,29 +245,32 @@ public class AccountConfigService {
                 .toList();
     }
 
-    @Transactional
     public SymbolMappingResponse saveSymbolMapping(SaveSymbolMappingRequest request) {
-        Mt5AccountEntity followerAccount = loadAccount(request.getFollowerAccountId());
-        ensureFollowerCapable(followerAccount);
+        Long followerAccountId = request.getFollowerAccountId();
+        List<Long> masterIds = routeSnapshotFactory.findMastersByFollower(followerAccountId);
+        return lockManager.executeWithMasterLocks(masterIds, 5000L, () -> transactionTemplate.execute(status -> {
+            Mt5AccountEntity followerAccount = loadAccount(followerAccountId);
+            ensureFollowerCapable(followerAccount);
 
-        String masterSymbol = normalizeSymbolKey(request.getMasterSymbol());
-        String followerSymbol = normalizeFollowerSymbol(request.getFollowerSymbol());
+            String masterSymbol = normalizeSymbolKey(request.getMasterSymbol());
+            String followerSymbol = normalizeFollowerSymbol(request.getFollowerSymbol());
 
-        SymbolMappingEntity mapping = symbolMappingRepository.findByFollowerAccount_IdAndMasterSymbol(
-                followerAccount.getId(),
-                masterSymbol
-        ).orElseGet(SymbolMappingEntity::new);
+            SymbolMappingEntity mapping = symbolMappingRepository.findByFollowerAccount_IdAndMasterSymbol(
+                    followerAccount.getId(),
+                    masterSymbol
+            ).orElseGet(SymbolMappingEntity::new);
 
-        mapping.setFollowerAccount(followerAccount);
-        mapping.setMasterSymbol(masterSymbol);
-        mapping.setFollowerSymbol(followerSymbol);
+            mapping.setFollowerAccount(followerAccount);
+            mapping.setMasterSymbol(masterSymbol);
+            mapping.setFollowerSymbol(followerSymbol);
 
-        SymbolMappingEntity saved = symbolMappingRepository.save(mapping);
-        routeCacheWriter.refreshFollowerRisk(followerAccount.getId());
-        for (Long masterId : routeSnapshotFactory.findMastersByFollower(followerAccount.getId())) {
-            routeCacheWriter.refreshMasterRoute(masterId);
-        }
-        return toSymbolMappingResponse(saved);
+            SymbolMappingEntity saved = symbolMappingRepository.save(mapping);
+            routeCacheWriter.refreshFollowerRisk(followerAccount.getId());
+            for (Long masterId : masterIds) {
+                routeCacheWriter.refreshMasterRoute(masterId);
+            }
+            return toSymbolMappingResponse(saved);
+        }));
     }
 
     @Transactional(readOnly = true)

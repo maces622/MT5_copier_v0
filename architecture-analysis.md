@@ -82,7 +82,8 @@ graph TD
 | 入口 | `/api/me/*`, `/api/accounts/*` |
 | DB 表 | `mt5_accounts`, `risk_rules`, `copy_relations`, `symbol_mappings`, `master_share_configs` |
 | Redis 缓存 | `copy:account:binding:{server}:{login}`, `copy:route:master:{id}`, `copy:account:risk:{id}` |
-| 写入模式 | **先写 DB → 再刷 Redis 缓存**（`RedisCopyRouteCacheWriter`），读走 Redis-first 策略 |
+| 一致性与锁定 | **RedisRouteLockManager 分布式互斥锁** 控制（基于 `SETNX`）。操作顺序：获取锁 -> `TransactionTemplate` 写 DB -> 覆写 Redis 缓存 (`RedisCopyRouteCacheWriter`) -> 释放锁。数据面读操作（引流端）完全无锁（RCU / Snapshot Isolation）。 |
+| 写入模式 | 强一致性缓存旁路：控制面互斥同步写，读走 Redis-first 策略 |
 | 缓存后端切换 | `copier.account-config.route-cache.backend` = `log` / `redis`（`@ConditionalOnProperty`） |
 | 预热 | `CopyRouteCacheWarmupRunner` 启动时从 DB 填充全部 route/risk/binding 到 Redis |
 

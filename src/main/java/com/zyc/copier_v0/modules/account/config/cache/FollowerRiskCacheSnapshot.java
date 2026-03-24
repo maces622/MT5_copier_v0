@@ -18,7 +18,7 @@ public class FollowerRiskCacheSnapshot {
     private BigDecimal maxDrawdownPct;
     private String allowedSymbols;
     private String blockedSymbols;
-    private boolean followTpSl;
+    private boolean followTpSl = true;
     private boolean reverseFollow;
     private Map<String, String> symbolMappings;
 }
