@@ -49,11 +49,13 @@
 1. `signal-ingest` 接收到 master `DEAL / ORDER`
 2. `copy-engine` 根据 `server + login` 找到 master 平台账户
 3. 读取该 master 的 route snapshot
-4. 对每个 follower 读取 risk / symbol mapping / runtime-state
+4. **并行**对每个 follower 读取 risk / symbol mapping / runtime-state
 5. 计算目标指令与目标手数
 6. 生成 command
 7. 对可执行 command 生成 dispatch
 8. `follower-exec` 负责 backlog 回放与实时下发
+
+> 单 follower 时内联执行，多 follower 时通过专用线程池 `copy-engine-follower` 并行处理（`CompletableFuture.allOf().join()`），每个 follower 独立事务（`TransactionTemplate`）。
 
 ## 6. 热路径模式
 
@@ -93,7 +95,14 @@
 3. 查不到再按 `executionCommandId` 合并
 4. 避免 `uk_dispatch_command` 冲突
 
-### 7.3 启动对齐热路径序列
+### 7.3 follower 并行处理与错误隔离
+
+1. 多 follower 时使用 `CompletableFuture.allOf()` 并行执行
+2. 每个 follower 使用独立 `TransactionTemplate`，失败不影响其他 follower
+3. 线程池大小可通过 `copier.copy-engine.hot-path.follower-parallelism` 配置
+4. ID 分配使用 Redis `INCR`，天然线程安全
+
+### 7.4 启动对齐热路径序列
 
 应用启动会把：
 

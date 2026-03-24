@@ -80,8 +80,8 @@ Redis 的职责是“加速和共享当前状态”，不是替代 MariaDB。
 2. 发送 `HELLO / HEARTBEAT / DEAL / ORDER`
 3. Java 标准化信号
 4. 写 signal audit
-5. 发布 `Mt5SignalAcceptedEvent`
-6. Copy Engine 消费事件并决定是否复制
+5. `Mt5SignalAcceptedEvent` 被 `publishEvent()` 同步发布
+6. Copy Engine 消费事件，**并行**处理各 follower（专用线程池 + 独立事务）
 
 ### 4.2 Follower 下行链路
 

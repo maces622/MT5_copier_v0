@@ -80,6 +80,13 @@ Redis 当前承担：
 1. 关键索引
 2. `@Version row_version`
 
+Copy Engine follower 并行处理的线程安全保护：
+
+1. `CopyHotPathIdAllocator` 使用 Redis `INCR`（原子操作），支持并行 ID 分配
+2. 每个 follower 使用独立 `TransactionTemplate`，无跨 follower 事务冲突
+3. `CopyHotPathRedisStore` 的 Redis 操作天然原子
+4. `CopyHotPathPersistenceQueue` 使用 Redis LIST `RPUSH/LPOP`，天然线程安全
+
 当前没有引入 Redisson 分布式锁，这是后续可选项，不是当前必需项。
 
 ## 当前已落地的工程优化
@@ -92,6 +99,8 @@ Redis 当前承担：
 6. runtime-state Redis-first，数据库只做节流快照
 7. 测试 profile 显式隔离本机 `SPRING_PROFILES_ACTIVE` 和 `COPIER_*`
 8. DTO/entity/config 大量样板代码已用 Lombok 收缩
+9. Lettuce 升级至 6.3.2，兼容 Redis 7+/8+ 的 HELLO AUTH 内联认证
+10. follower 并行处理线程池 + 独立事务，延迟从 O(N) 降至 O(1)
 
 ## 备份与恢复原则
 

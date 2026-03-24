@@ -43,7 +43,8 @@
 
 1. `copy-engine` 先用 `account-config` 投影出来的 account-binding 找到 masterAccount。
 2. 再读取 route/risk/symbol mapping/runtime-state。
-3. 最后生成 command 和 dispatch。
+3. **并行**对每个 follower 生成 command 和 dispatch（单 follower 内联执行，多 follower 专用线程池并行）。
+4. 每个 follower 使用独立事务，单个失败不影响其他 follower。
 
 ### 3.4 Follower 下行
 
@@ -164,10 +165,13 @@ EA 需要手工填写：
 
 1. `copy-engine` 先按 `server + login` 找到 master 平台账户。
 2. 读取 master route snapshot，拿到 follower 列表。
-3. 对每个 follower 读取 risk snapshot、symbol mapping、runtime-state。
-4. 按 copy mode 计算目标指令与目标手数。
-5. 生成 `execution_commands`。
-6. 对 `READY` 的 command 生成 `follower_dispatch_outbox`。
+3. **并行**对每个 follower 执行以下步骤（单 follower 内联执行，多 follower 使用专用线程池 `copy-engine-follower`）：
+   1. 读取 risk snapshot、symbol mapping、runtime-state。
+   2. 按 copy mode 计算目标指令与目标手数。
+   3. 生成 `execution_commands`。
+   4. 对 `READY` 的 command 生成 `follower_dispatch_outbox`。
+4. 每个 follower 使用独立 `TransactionTemplate`，单个 follower 处理失败不影响其他 follower。
+5. `CompletableFuture.allOf().join()` 等待所有 follower 完成后返回。
 
 关键保护：
 
@@ -176,6 +180,7 @@ EA 需要手工填写：
 3. dispatch 持久化会按 `dispatchId` 和 `executionCommandId` 合并，避免唯一键冲突。
 4. 若一个 `executionCommandId` 已绑定到其他 dispatch，服务会跳过重复创建并记录告警。
 5. 启动时会对齐 `copy:hot:seq:*`，避免重启后旧 ID 被复用。
+6. ID 分配使用 Redis `INCR`（`CopyHotPathIdAllocator`），天然线程安全，支持并行分配。
 
 ### 5.5 `DATABASE` 与 `REDIS_QUEUE` 两种热路径
 

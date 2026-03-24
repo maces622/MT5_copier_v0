@@ -83,6 +83,9 @@
 17. dispatch 去重合并，避免 `uk_dispatch_command` 冲突
 18. 启动对齐 `copy:hot:seq:*`，避免旧 `executionCommandId` 被复用
 19. 资金快照新鲜度门禁，避免比例跟单静默退回 `1.0`
+20. follower 并行处理（`CompletableFuture.allOf()` + 专用线程池 `copy-engine-follower`）
+21. 每个 follower 独立事务（`TransactionTemplate`），单个失败不影响其他 follower
+22. 线程池大小可配置（`copier.copy-engine.hot-path.follower-parallelism`，默认 CPU 核数）
 
 ### 5. Follower Exec
 
