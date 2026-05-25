@@ -6,7 +6,6 @@
 
 基于这一需求，我基于Java Springboot开发框架、MQL5（MetaTrader 5 官方自动化交易程序所使用的一种类C++的面向对象编程语言）、Redis、MariaDB、web-console 实现了一个交易跟单平台，基于Websocket实现了长连接，支持平台用户注册登录、MT5账户绑定和角色设置、跟单账户绑定、带单信号分享、交易执行等功能。
 
-支持
 ## 整体系统架构
 
 当前仓库为已经落地单体 Java SpringBoot 应用：
